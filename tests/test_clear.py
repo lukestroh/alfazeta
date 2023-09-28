@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""
-main.py - Main program for 7-segment 1x10 display from AlfaZeta
-Author: Luke Strohbehn
-Date: 08/27/2023
-"""
 
 from alfazeta import alfazeta
 import time
+import sys
 
 
 COM_PORT = 'com22'
@@ -23,12 +19,7 @@ def main():
     )
 
     time.sleep(.5)
-    # while True:
-    
     flip_digit.clear_display()
-    flip_digit.fill_display()
-    flip_digit.display_datetime()
-    time.sleep(1)
 
     
     return

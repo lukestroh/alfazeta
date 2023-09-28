@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+library.py - Generates the library as a dictionary.
+
+Author: Luke Strohbehn
+Date: 08/27/2023
+
+Each of the 7-segments can be controlled using a single byte, where the seven flags are controlled via the first seven least-significant bits. The 8th bit does not do anything and should be set to 0.
+"""
+
 # https://blogfonts.com/fonts/s/373/49373/img/slide-segment7-0.png
 def library():
     pos = dict(
