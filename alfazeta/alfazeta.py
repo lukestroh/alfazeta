@@ -15,11 +15,10 @@ import asyncio
 import sys, os
 import warnings
 import copy
-import codecs
 
 
 try:
-    import RPi.GPIO as gpio
+    import pigpio as gpio
     raspi_mode = True
 except ImportError as e:
     print(f"{e}: This computer does not appear to have the Raspberry Pi GPIO library. Shadowing hardware calls with substitute functions.")
@@ -28,10 +27,11 @@ except ImportError as e:
 
 START_BYTE = 0x80
 END_BYTE = 0x8f
-load_data_dont_show = 0x8e
+CLEAR_BYTE = 0xff # clears the screen
 LOAD_DATA_SHOW = 0x8d
-show_loaded_data = 0x82
-clear_byte = 0xff # clears the screen
+LOAD_DATA_DONT_SHOW = 0x8e
+SHOW_LOADED_DATA = 0x82
+
 
 DEBUG = 0
 
@@ -56,7 +56,7 @@ class AlfaZeta:
         self.end_byte = end_byte
         self.display_option = display_option
         self.empty_byte_arr = bytearray([self.start_byte, self.display_option, self.address, 0b0, 0b0, 0b0, 0b0, 0b0, 0b0, 0b0, 0b0, 0b0, 0b0, self.end_byte])
-        
+        self.last_data_sent = bytearray([])
         # Load normal or flipped library
         self.flipped = flipped
         if flipped == True:
@@ -68,54 +68,50 @@ class AlfaZeta:
         self._connect_to_serial()
         
         if raspi_mode:
-            # Set up GPIO pin
-            self._set_up_gpio()
-            gpio.add_event_detect(self.button_pin, gpio.RISING)
-            gpio.add_event_callback(self.button_pin, self.handle_button_press)
+            # Set up GPIO pin to be pulldown
+            self.pio = gpio.pi()
+            self.pio.set_mode(self.button_pin, gpio.INPUT)
+            self.pio.set_pull_up_down(self.button_pin, gpio.PUD_UP)
+            self.pio_cb_id = self.pio.callback(self.button_pin, gpio.RISING_EDGE, self.button_callback)
 
-            # Button variables
-            self.clock_on = True
+        self._run = True
         return
-    
-    
-    def _set_up_gpio(self) -> None:
-        gpio.setup(self.button_pin, gpio.IN, pull_up_down=gpio.PUD_UP)
-        return
-    
+
+    def button_callback(self):
+        """ Button press callback """
+        print("Got a callback!")
+        if self.pio_cb_id.tally() % 2 == 0:
+            self.startup_sequence()
+            self._run = True
+        else:
+            self.shutdown_sequence()
+            self._run = False
+        return 
 
     def _connect_to_serial(self) -> None:
+        """ Connect to the Serial to RS232 converter """
         try:
             self.serial = serial.Serial(self.port, baudrate=self.BAUDRATE, bytesize=self.BYTESIZE)
             # print(self.serial)
-        except (serial.serialutil.SerialException, KeyboardInterrupt) as e:
+        except serial.serialutil.SerialException as e:
             if DEBUG:
                 print(f"\nCould not connect to the device on port {self.port}. Continuing in DEBUG mode, running shadow functions.")
             else:
                 sys.exit(f"\nCould not connect to the device on port {self.port}. Error: {e}\nExiting.")
         return
-    
 
-    def handle_button_press(self):
-        """ Handle the button interrupt, turn the clock on or off """
-        # https://sourceforge.net/p/raspberry-gpio-python/wiki/Inputs/
-        self.clock_on = True - self.clock_on
-
-        while not self.clock_on:
-            time.sleep(30) # is there a better way to do this?
-            self.clear_display()
-        
-        return
-    
-
-    def _write_buffer(self, data) -> bytearray:
+    def _write_buffer(self, data, raw_data: bool = False) -> bytearray:
         """ Put the data in the correct format """
         data_buf = copy.deepcopy(self.empty_byte_arr)
-        byte_data = list(map(lambda x: self.dictionary[x], data))
-        data_buf[3:-1] = byte_data
+        if not raw_data:
+            byte_data = list(map(lambda x: self.dictionary[x], data))
+        else:
+            byte_data = data
+        data_buf[3:-1] = byte_data[:10]
+        self.last_data_sent = byte_data
         return data_buf
             
-
-    def write_to_display(self, data) -> None:
+    def write_to_display(self, data, raw_data: bool = False) -> None:
         """ Send a message to the display"""
         if len(data) > 10:
             warnings.warn(f"Input buffer {data} is longer than 10 characters. The entire message may not be displayed.", UserWarning)
@@ -123,19 +119,17 @@ class AlfaZeta:
             data.ljust(10)
         else:
             data.rjust(10)
-        data_buf = self._write_buffer(data)
+        data_buf = self._write_buffer(data, raw_data=raw_data)
         # if not DEBUG:
         self.serial.write(data_buf)
         return
         
-
     def clear_display(self) -> None:
         """ Completely clear the display """
         if not DEBUG:
             self.serial.write(self.empty_byte_arr)
         return
     
-
     def fill_display(self) -> None:
         """ Completely fill the display """
         data_buf = copy.deepcopy(self.empty_byte_arr)
@@ -145,10 +139,10 @@ class AlfaZeta:
         print(data_buf)
         if not DEBUG:
             self.serial.write(data_buf)
-        return
+        return 
   
     def display_datetime(self, h24: bool = True) -> None:
-        """ Display """
+        """ Display the datetime """
         slow_message_trigger = 0
         cur_time = datetime.datetime.now()
         # Send fewer messages to the controller by syncing our clock up to be within a second using slow_message_trigger.
@@ -165,11 +159,65 @@ class AlfaZeta:
             self.write_to_display(cur_time[::-1])
         else:
             self.write_to_display(cur_time)
+        
         if slow_message_trigger:
             return 1
         else:
             return 0
 
+    def run_shutdown_sequence(self) -> None:
+        """ Run the shutdown sequence """
+        self._run = False
+        return
+
+    def run_startup_sequence(self) -> None:
+        """ Run the startup sequence 
+        Better option TODO: make a function that detects whether a horizontal or vertical piece is touching, like tetris. Then
+        fill in the spots until the screen is full
+        """
+        self.clear_display()
+        time.sleep(0.5)
+
+        byte_deque = col.deque([
+            0b00000001,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+            0b00000000,
+        ])
+
+        for _i in range(0,7):
+            
+            for _j in range(0,10):
+                self.write_to_display(bytearray(byte_deque), raw_data = True)
+                time.sleep(0.05)
+                byte_deque.rotate(1)
+                
+            byte_deque[0] = byte_deque[0] << 1
+        
+        self.clear_display()
+
+        # Bit shift open one to next position
+        self._run = True
+        return   
+
+    def run_program(self) -> None:
+        """ Run the main control sequence """
+        self.run_startup_sequence()
+        while True:
+            if self._run:
+                slow_message_trigger = self.display_datetime(h24 = True)
+                if slow_message_trigger:
+                    time.sleep(60)
+                else:
+                    time.sleep(1)
+            # self.clear_display()
+            # time.sleep(1)
     # def error_screen(self):
     #     byte_array = self.byte_header.copy()
     #     for letter in "error".rjust(10):

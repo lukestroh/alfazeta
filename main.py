@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py - Main program for 7-segment 1x10 display from AlfaZeta
+main.py - Main high-level program for 7-segment 1x10 display from AlfaZeta
 Author: Luke Strohbehn
 Date: 08/27/2023
 """
@@ -23,14 +23,8 @@ def main():
     )
 
     time.sleep(.5)
-    # while True:
-    
-    flip_digit.clear_display()
-    flip_digit.fill_display()
-    flip_digit.display_datetime()
-    time.sleep(1)
 
-    
+    flip_digit.run_program()
     return
 
 if __name__ == '__main__':
